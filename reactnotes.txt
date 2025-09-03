@@ -1,0 +1,8 @@
+lifecycles in react. 
+Componentdidupdate. This will refresh your class component when it recieves new data.
+So for the blog on the previous posts page, I'm currently not getting the most recent post.
+Would that llifecycle refresh that data?
+useEffect is the functional components way of tapping into the lifecycle. UseEffect updates the state
+when new data is given. Same as ComonentDieupdate.
+
+useState returns a const and a function that updates it. That's why setCount is set as a yellowcode function.
