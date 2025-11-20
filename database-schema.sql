@@ -28,6 +28,54 @@ CREATE TABLE IF NOT EXISTS blogs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Create likes table
+CREATE TABLE IF NOT EXISTS likes (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    blog_id INTEGER NOT NULL REFERENCES blogs(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, blog_id)
+);
+
+-- Create comments table
+CREATE TABLE IF NOT EXISTS comments (
+    id SERIAL PRIMARY KEY,
+    blog_id INTEGER NOT NULL REFERENCES blogs(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_name VARCHAR(100) NOT NULL,
+    comment_text TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create categories table
+CREATE TABLE IF NOT EXISTS categories (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) UNIQUE NOT NULL,
+    slug VARCHAR(50) UNIQUE NOT NULL,
+    color VARCHAR(7) DEFAULT '#6a6a6a',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create blog_categories junction table (many-to-many)
+CREATE TABLE IF NOT EXISTS blog_categories (
+    id SERIAL PRIMARY KEY,
+    blog_id INTEGER NOT NULL REFERENCES blogs(id) ON DELETE CASCADE,
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    UNIQUE(blog_id, category_id)
+);
+
+-- Insert default categories
+INSERT INTO categories (name, slug, color) VALUES
+('Technology', 'technology', '#3b82f6'),
+('Programming', 'programming', '#8b5cf6'),
+('Design', 'design', '#ec4899'),
+('Lifestyle', 'lifestyle', '#10b981'),
+('Tutorial', 'tutorial', '#f59e0b'),
+('News', 'news', '#ef4444'),
+('Personal', 'personal', '#6366f1'),
+('Other', 'other', '#6a6a6a')
+ON CONFLICT (slug) DO NOTHING;
+
 -- Insert a test user (password: test123)
 INSERT INTO users (name, email, password) VALUES 
 ('Test User', 'test@example.com', 'test123')
