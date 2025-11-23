@@ -1,17 +1,22 @@
+require('dotenv').config();
 const express = require('express');
 // const bodyParser = require('body-parser');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
-const knex = require('knex')
+const knex = require('knex');
+const sanitize = require('./utils/sanitize');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const db = knex({
     client: 'pg',
     connection: {
-        host: '127.0.0.1',
-        user: 'postgres',
-        password: 'Redwings!',
-        database: 'Blog',
-        port: 3002
+        host: process.env.DB_HOST || '127.0.0.1',
+        user: process.env.DB_USER || 'postgres',
+        password: process.env.DB_PASSWORD || 'Redwings!',
+        database: process.env.DB_NAME || 'Blog',
+        port: process.env.DB_PORT || 3002
     }
 })
 
@@ -24,6 +29,66 @@ app.use(express.json());
 app.use(express.urlencoded({extended: true})); 
 app.use(cors());
 
+// Create uploads directory if it doesn't exist
+const uploadsDir = path.join(__dirname, '../uploads');
+const imagesDir = path.join(uploadsDir, 'images');
+const avatarsDir = path.join(uploadsDir, 'avatars');
+
+[uploadsDir, imagesDir, avatarsDir].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+// Configure multer for image uploads
+const imageStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, imagesDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'image-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const avatarStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, avatarsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'avatar-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const imageFilter = (req, file, cb) => {
+  // Accept only image files
+  if (file.mimetype.startsWith('image/')) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed!'), false);
+  }
+};
+
+const uploadImage = multer({
+  storage: imageStorage,
+  fileFilter: imageFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  }
+});
+
+const uploadAvatar = multer({
+  storage: avatarStorage,
+  fileFilter: imageFilter,
+  limits: {
+    fileSize: 2 * 1024 * 1024 // 2MB limit for avatars
+  }
+});
+
+// Serve uploaded files statically
+app.use('/uploads', express.static(uploadsDir));
+
 
 app.get('/', (req, res)=> {
     res.send(db.users);
@@ -31,7 +96,10 @@ app.get('/', (req, res)=> {
 
 
 app.post('/signin', (req, res) => {
-  const { email, password } = req.body;
+  let { email, password } = req.body;
+  
+  // Sanitize input
+  email = sanitize.sanitizeInput(email);
   
   console.log('Signin attempt for email:', email);
   
@@ -66,7 +134,11 @@ app.post('/signin', (req, res) => {
 });
 
 app.post('/register', (req, res) => {
-  const { email, name, password } = req.body;
+  let { email, name, password } = req.body;
+  
+  // Sanitize input (don't sanitize password as it will be hashed)
+  email = sanitize.sanitizeInput(email);
+  name = sanitize.sanitizeInput(name);
   
   console.log('Registration attempt:', { email, name, passwordLength: password ? password.length : 0 });
   
@@ -141,18 +213,34 @@ app.post('/register', (req, res) => {
 });
   
   app.post('/blogpost', (req, res) => {
-    const { postbody, name, posttitle, id, category_ids } = req.body;
+    let { postbody, name, posttitle, id, category_ids, status = 'published' } = req.body;
+    
+    // Sanitize input
+    name = sanitize.sanitizeInput(name);
+    posttitle = sanitize.sanitizeInput(posttitle);
+    postbody = sanitize.sanitizeText(postbody); // Use sanitizeText for blog content
+    status = status === 'draft' ? 'draft' : 'published'; // Ensure valid status
     
     console.log('=== BLOG POST CREATION ATTEMPT ===');
-    console.log('Request body:', { postbody: postbody?.substring(0, 50) + '...', name, posttitle, id, category_ids });
+    console.log('Request body:', { postbody: postbody?.substring(0, 50) + '...', name, posttitle, id, category_ids, status });
     console.log('User ID type:', typeof id, 'Value:', id);
     
     // Validate required fields
-    if (!postbody || !posttitle || !name || !id) {
+    // For drafts, only title is required. For published, both title and body are required.
+    if (!posttitle || !name || !id) {
       console.log('❌ Missing required fields');
       return res.status(400).json({ 
         error: 'Missing required fields', 
         details: { postbody: !!postbody, posttitle: !!posttitle, name: !!name, id: !!id }
+      });
+    }
+    
+    // For published posts, body is required
+    if (status === 'published' && !postbody) {
+      console.log('❌ Published posts require content');
+      return res.status(400).json({ 
+        error: 'Published posts require content', 
+        details: 'Please add content to your post before publishing'
       });
     }
     
@@ -163,7 +251,8 @@ app.post('/register', (req, res) => {
         postbody: postbody,
         posttitle: posttitle,
         name: name,
-        user_id: id
+        user_id: id,
+        status: status
       })
       .then(result => {
         const blogPost = result[0];
@@ -206,11 +295,18 @@ app.post('/register', (req, res) => {
   // Update (edit) a blog post
   app.put('/blogpost/:id', (req, res) => {
     const { id } = req.params;
-    const { postbody, posttitle, user_id } = req.body;
+    let { postbody, posttitle, user_id, status } = req.body;
+    
+    // Sanitize input
+    posttitle = sanitize.sanitizeInput(posttitle);
+    postbody = sanitize.sanitizeText(postbody); // Use sanitizeText for blog content
+    if (status) {
+      status = status === 'draft' ? 'draft' : 'published'; // Ensure valid status
+    }
     
     console.log('=== BLOG POST UPDATE ATTEMPT ===');
     console.log('Post ID:', id);
-    console.log('Request body:', { postbody: postbody?.substring(0, 50) + '...', posttitle, user_id });
+    console.log('Request body:', { postbody: postbody?.substring(0, 50) + '...', posttitle, user_id, status });
     
     // Validate required fields
     if (!postbody || !posttitle || !user_id) {
@@ -231,13 +327,21 @@ app.post('/register', (req, res) => {
             throw new Error('Post not found or you do not have permission to edit it');
           }
           
+          // Build update object
+          const updateData = {
+            postbody: postbody.trim(),
+            posttitle: posttitle.trim()
+          };
+          
+          // Add status if provided
+          if (status) {
+            updateData.status = status;
+          }
+          
           // Update the post
           return trx('blogs')
             .where({ id: id, user_id: user_id })
-            .update({
-              postbody: postbody.trim(),
-              posttitle: posttitle.trim()
-            })
+            .update(updateData)
             .returning('*')
             .then(result => {
               if (result.length === 0) {
@@ -335,9 +439,21 @@ app.post('/register', (req, res) => {
       const { page = 1, limit = 10, category_id } = req.body;
       const offset = (page - 1) * limit;
       
+      console.log('=== ALLBLOGS REQUEST ===');
+      console.log('Request body:', { page, limit, category_id, offset });
+      
       // Build query with optional category filter
+      // Try to filter by status (published posts), fall back if column doesn't exist
       let blogsQuery = db('blogs');
       let countQuery = db('blogs');
+      
+      // Add status filter (will fail gracefully if column doesn't exist)
+      blogsQuery = blogsQuery.where(function() {
+        this.where('status', 'published').orWhereNull('status');
+      });
+      countQuery = countQuery.where(function() {
+        this.where('status', 'published').orWhereNull('status');
+      });
       
       if (category_id) {
         blogsQuery = blogsQuery
@@ -347,10 +463,14 @@ app.post('/register', (req, res) => {
           .distinct();
         countQuery = countQuery
           .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
-          .where('blog_categories.category_id', category_id);
+          .where('blog_categories.category_id', category_id)
+          .where(function() {
+            this.where('blogs.status', 'published').orWhereNull('blogs.status');
+          });
       }
       
       // Get total count and paginated results
+      // If status column doesn't exist, catch will handle fallback
       Promise.all([
         countQuery.count('* as total').first(),
         blogsQuery
@@ -358,22 +478,55 @@ app.post('/register', (req, res) => {
           .limit(limit)
           .offset(offset)
       ])
+        .catch(err => {
+          // If query failed (possibly due to missing status column), try without status filter
+          console.log('Query failed, trying without status filter:', err.message);
+          let fallbackQuery = db('blogs');
+          let fallbackCount = db('blogs');
+          
+          if (category_id) {
+            fallbackQuery = fallbackQuery
+              .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+              .where('blog_categories.category_id', category_id)
+              .select('blogs.*')
+              .distinct();
+            fallbackCount = fallbackCount
+              .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+              .where('blog_categories.category_id', category_id);
+          }
+          
+          return Promise.all([
+            fallbackCount.count('* as total').first(),
+            fallbackQuery
+              .orderBy('blogs.created_at', 'desc')
+              .limit(limit)
+              .offset(offset)
+          ]);
+        })
         .then(async ([countResult, blogs]) => {
-          const total = parseInt(countResult.total);
+          const total = parseInt(countResult.total) || 0;
           const totalPages = Math.ceil(total / limit);
           
           // Fetch categories for each blog
           const blogsWithCategories = await Promise.all(
             blogs.map(async (blog) => {
-              const categories = await db('blog_categories')
-                .join('categories', 'blog_categories.category_id', 'categories.id')
-                .where('blog_categories.blog_id', blog.id)
-                .select('categories.*');
-              
-              return {
-                ...blog,
-                categories: categories || []
-              };
+              try {
+                const categories = await db('blog_categories')
+                  .join('categories', 'blog_categories.category_id', 'categories.id')
+                  .where('blog_categories.blog_id', blog.id)
+                  .select('categories.*');
+                
+                return {
+                  ...blog,
+                  categories: categories || []
+                };
+              } catch (err) {
+                console.error('Error fetching categories for blog:', blog.id, err);
+                return {
+                  ...blog,
+                  categories: []
+                };
+              }
             })
           );
           
@@ -391,7 +544,15 @@ app.post('/register', (req, res) => {
         })
         .catch(err => {
           console.error('Error fetching all blogs:', err);
-          res.status(400).json({ error: 'Unable to get all blogs' });
+          console.error('Error details:', {
+            message: err.message,
+            code: err.code,
+            detail: err.detail
+          });
+          res.status(500).json({ 
+            error: 'Unable to get all blogs',
+            details: err.message 
+          });
         });
     })
 
@@ -402,6 +563,7 @@ app.post('/getposts', (req,res) => {
   console.log('Request body:', { name, id });
   
   db.transaction(trx => {
+    // Get all posts (including drafts) for the user
     return trx.select('*').from('blogs').where('user_id', id).orderBy('created_at', 'desc')
       .then(posts => {
         console.log('✅ User posts fetched:', posts.length, 'posts');
@@ -448,7 +610,11 @@ app.get('/user-posts/:userId', (req, res) => {
 })
 
 app.get("/search", (req, res) => {
-  const searchTerm = req.query.q;
+  let searchTerm = req.query.q;
+  
+  // Sanitize search term
+  searchTerm = sanitize.sanitizeInput(searchTerm);
+  
   console.log('Searching for:', searchTerm);
   
   if (!searchTerm || searchTerm.trim() === '') {
@@ -456,8 +622,10 @@ app.get("/search", (req, res) => {
   }
   
   // Search through blog posts for keywords in title and body
+  // Only search published posts
   db.select("*")
     .from("blogs")
+    .where("status", "published")
     .where(function() {
       this.where("posttitle", "ilike", `%${searchTerm}%`)
           .orWhere("postbody", "ilike", `%${searchTerm}%`)
@@ -601,7 +769,11 @@ app.get('/user-likes/:userId', (req, res) => {
 
 // Create a new comment
 app.post('/comment', (req, res) => {
-  const { blog_id, user_id, user_name, comment_text } = req.body;
+  let { blog_id, user_id, user_name, comment_text } = req.body;
+  
+  // Sanitize input
+  user_name = sanitize.sanitizeInput(user_name);
+  comment_text = sanitize.sanitizeText(comment_text); // Use sanitizeText for comments
   
   console.log('=== COMMENT CREATION ATTEMPT ===');
   console.log('Blog ID:', blog_id, 'User ID:', user_id);
@@ -727,11 +899,16 @@ app.get('/categories', (req, res) => {
     .select('*')
     .orderBy('name', 'asc')
     .then(categories => {
-      res.json(categories);
+      res.json(categories || []);
     })
     .catch(err => {
       console.error('Error fetching categories:', err);
-      res.status(500).json({ error: 'Failed to fetch categories' });
+      // Return empty array instead of error if table doesn't exist
+      if (err.message && err.message.includes('does not exist')) {
+        res.json([]);
+      } else {
+        res.status(500).json({ error: 'Failed to fetch categories' });
+      }
     });
 });
 
@@ -752,6 +929,85 @@ app.get('/blogs/:postId/categories', (req, res) => {
     });
 });
 
-app.listen(3001, ()=> {
-    console.log('app is running on port 3001')
+// Image upload endpoint for blog posts
+app.post('/upload-image', uploadImage.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No image file provided' });
+  }
+  
+  // Return the URL to access the uploaded image
+  const imageUrl = `/uploads/images/${req.file.filename}`;
+  res.json({
+    success: true,
+    url: imageUrl,
+    filename: req.file.filename
+  });
+});
+
+// Avatar upload endpoint
+app.post('/upload-avatar', uploadAvatar.single('avatar'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No avatar file provided' });
+  }
+  
+  const { user_id } = req.body;
+  
+  if (!user_id) {
+    // Delete the uploaded file if no user_id
+    fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: 'User ID is required' });
+  }
+  
+  const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+  
+  // Update user's avatar in database
+  db('users')
+    .where({ id: user_id })
+    .update({ avatar_url: avatarUrl })
+    .then(() => {
+      res.json({
+        success: true,
+        url: avatarUrl,
+        filename: req.file.filename
+      });
+    })
+    .catch(err => {
+      console.error('Error updating avatar:', err);
+      // Delete the uploaded file on error
+      fs.unlinkSync(req.file.path);
+      res.status(500).json({ error: 'Failed to update avatar' });
+    });
+});
+
+// Get user avatar
+app.get('/avatar/:userId', (req, res) => {
+  const { userId } = req.params;
+  
+  db('users')
+    .where({ id: userId })
+    .select('*')
+    .first()
+    .then(user => {
+      if (user) {
+        // Check if avatar_url column exists, if not return null
+        const avatarUrl = user.avatar_url || null;
+        res.json({ avatar_url: avatarUrl });
+      } else {
+        res.json({ avatar_url: null });
+      }
+    })
+    .catch(err => {
+      console.error('Error fetching avatar:', err);
+      // If column doesn't exist, just return null instead of error
+      if (err.message && err.message.includes('column') && err.message.includes('does not exist')) {
+        res.json({ avatar_url: null });
+      } else {
+        res.status(500).json({ error: 'Failed to fetch avatar' });
+      }
+    });
+});
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, ()=> {
+    console.log(`app is running on port ${PORT}`)
 })

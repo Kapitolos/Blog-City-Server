@@ -1,0 +1,15 @@
+# Database Configuration
+DB_HOST=127.0.0.1
+DB_USER=postgres
+DB_PASSWORD=Redwings!
+DB_NAME=Blog
+DB_PORT=3002
+
+# Server Configuration
+PORT=3001
+
+# API Configuration
+API_URL=http://localhost:3001
+
+
+
