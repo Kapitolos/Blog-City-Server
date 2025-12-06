@@ -217,7 +217,9 @@ app.post('/register', (req, res) => {
     
     // Sanitize input
     name = sanitize.sanitizeInput(name);
-    posttitle = sanitize.sanitizeInput(posttitle);
+    // Don't escape HTML entities in title - it's displayed as plain text, not HTML
+    // Just trim and validate, but don't escape since React will handle it safely
+    posttitle = posttitle ? posttitle.trim() : '';
     postbody = sanitize.sanitizeText(postbody); // Use sanitizeText for blog content
     status = status === 'draft' ? 'draft' : 'published'; // Ensure valid status
     
@@ -298,7 +300,8 @@ app.post('/register', (req, res) => {
     let { postbody, posttitle, user_id, status } = req.body;
     
     // Sanitize input
-    posttitle = sanitize.sanitizeInput(posttitle);
+    // Don't escape HTML entities in title - it's displayed as plain text
+    posttitle = posttitle ? posttitle.trim() : '';
     postbody = sanitize.sanitizeText(postbody); // Use sanitizeText for blog content
     if (status) {
       status = status === 'draft' ? 'draft' : 'published'; // Ensure valid status
@@ -893,9 +896,11 @@ app.get('/comments/:postId/count', (req, res) => {
     });
 });
 
-// Get all categories
+// Get all categories (all public categories are visible to everyone)
 app.get('/categories', (req, res) => {
+  // Show all public categories to everyone (custom categories are public by default)
   db('categories')
+    .where('is_public', true)
     .select('*')
     .orderBy('name', 'asc')
     .then(categories => {
@@ -909,6 +914,65 @@ app.get('/categories', (req, res) => {
       } else {
         res.status(500).json({ error: 'Failed to fetch categories' });
       }
+    });
+});
+
+// Create a custom category (public by default so all users can see it)
+app.post('/categories', (req, res) => {
+  const { name, color, user_id, is_public = true } = req.body;
+  
+  // Validate input
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Category name is required' });
+  }
+  
+  if (!user_id) {
+    return res.status(400).json({ error: 'User ID is required' });
+  }
+  
+  // Generate slug from name
+  const slug = name.toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  
+  // Check if category with same name already exists (globally, since they're public)
+  db('categories')
+    .where({ name: name.trim() })
+    .first()
+    .then(existing => {
+      if (existing) {
+        return res.status(400).json({ error: 'A category with this name already exists' });
+      }
+      
+      // Check if slug already exists (must be unique)
+      return db('categories')
+        .where({ slug: slug })
+        .first()
+        .then(slugExisting => {
+          if (slugExisting) {
+            return res.status(400).json({ error: 'A category with a similar name already exists' });
+          }
+          
+          // Create the category (public so all users can see and use it)
+          return db('categories')
+            .insert({
+              name: name.trim(),
+              slug: slug,
+              color: color || '#6a6a6a',
+              user_id: user_id,
+              is_public: true // Always public so community can use it
+            })
+            .returning('*')
+            .then(result => {
+              res.json(result[0]);
+            });
+        });
+    })
+    .catch(err => {
+      console.error('Error creating category:', err);
+      res.status(500).json({ error: 'Failed to create category' });
     });
 });
 
@@ -926,6 +990,81 @@ app.get('/blogs/:postId/categories', (req, res) => {
     .catch(err => {
       console.error('Error fetching blog categories:', err);
       res.status(500).json({ error: 'Failed to fetch blog categories' });
+    });
+});
+
+// Get user's category preference
+app.get('/user-preference/:userId', (req, res) => {
+  const { userId } = req.params;
+  
+  db('users')
+    .where({ id: userId })
+    .select('preferred_category_id')
+    .first()
+    .then(user => {
+      if (user) {
+        res.json({ preferred_category_id: user.preferred_category_id });
+      } else {
+        res.status(404).json({ error: 'User not found' });
+      }
+    })
+    .catch(err => {
+      console.error('Error fetching user preference:', err);
+      res.status(500).json({ error: 'Failed to fetch user preference' });
+    });
+});
+
+// Update user's category preference
+app.put('/user-preference/:userId', (req, res) => {
+  const { userId } = req.params;
+  const { preferred_category_id } = req.body;
+  
+  // Validate userId exists
+  db('users')
+    .where({ id: userId })
+    .first()
+    .then(user => {
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // If category_id provided, validate it exists
+      if (preferred_category_id !== null && preferred_category_id !== undefined) {
+        return db('categories')
+          .where({ id: preferred_category_id })
+          .first()
+          .then(category => {
+            if (!category) {
+              return res.status(400).json({ error: 'Category not found' });
+            }
+            
+            // Update user preference
+            return db('users')
+              .where({ id: userId })
+              .update({ preferred_category_id: preferred_category_id })
+              .then(() => {
+                res.json({ 
+                  success: true, 
+                  preferred_category_id: preferred_category_id 
+                });
+              });
+          });
+      } else {
+        // Clear preference (set to null)
+        return db('users')
+          .where({ id: userId })
+          .update({ preferred_category_id: null })
+          .then(() => {
+            res.json({ 
+              success: true, 
+              preferred_category_id: null 
+            });
+          });
+      }
+    })
+    .catch(err => {
+      console.error('Error updating user preference:', err);
+      res.status(500).json({ error: 'Failed to update user preference' });
     });
 });
 
