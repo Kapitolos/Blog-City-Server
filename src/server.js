@@ -439,11 +439,17 @@ app.post('/register', (req, res) => {
   })
 
     app.post('/allblogs', (req, res) => {
-      const { page = 1, limit = 10, category_id } = req.body;
+      const { page = 1, limit = 10, category_id, category_ids, sort_order = 'newest', date_filter, min_likes, show_only_followed, current_user_id } = req.body;
       const offset = (page - 1) * limit;
       
+      // Support both old format (category_id) and new format (category_ids array)
+      const categoryIds = category_ids || (category_id ? [category_id] : null);
+      
+      // Validate sort_order
+      const sortOrder = sort_order === 'oldest' ? 'asc' : 'desc';
+      
       console.log('=== ALLBLOGS REQUEST ===');
-      console.log('Request body:', { page, limit, category_id, offset });
+      console.log('Request body:', { page, limit, category_ids: categoryIds, sort_order, date_filter, min_likes, show_only_followed, current_user_id, offset });
       
       // Build query with optional category filter
       // Try to filter by status (published posts), fall back if column doesn't exist
@@ -458,18 +464,81 @@ app.post('/register', (req, res) => {
         this.where('status', 'published').orWhereNull('status');
       });
       
-      if (category_id) {
+      // Exclude hidden users if current_user_id is provided
+      if (current_user_id) {
+        blogsQuery = blogsQuery.whereNotIn('blogs.user_id', function() {
+          this.select('hidden_user_id')
+            .from('hidden_users')
+            .where('user_id', current_user_id);
+        });
+        countQuery = countQuery.whereNotIn('blogs.user_id', function() {
+          this.select('hidden_user_id')
+            .from('hidden_users')
+            .where('user_id', current_user_id);
+        });
+      }
+      
+      // Show only followed users if filter is enabled
+      if (show_only_followed && current_user_id) {
+        blogsQuery = blogsQuery.whereIn('blogs.user_id', function() {
+          this.select('following_id')
+            .from('follows')
+            .where('follower_id', current_user_id);
+        });
+        countQuery = countQuery.whereIn('blogs.user_id', function() {
+          this.select('following_id')
+            .from('follows')
+            .where('follower_id', current_user_id);
+        });
+      }
+      
+      // Add date filter if provided
+      if (date_filter) {
+        const filterDate = new Date(date_filter);
+        const nextDay = new Date(filterDate);
+        nextDay.setDate(nextDay.getDate() + 1);
+        
+        blogsQuery = blogsQuery.whereBetween('blogs.created_at', [filterDate, nextDay]);
+        countQuery = countQuery.whereBetween('blogs.created_at', [filterDate, nextDay]);
+      }
+      
+      // Add likes filter if provided
+      if (min_likes !== null && min_likes !== undefined && !isNaN(parseInt(min_likes, 10))) {
+        const minLikesCount = parseInt(min_likes, 10);
         blogsQuery = blogsQuery
-          .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
-          .where('blog_categories.category_id', category_id)
-          .select('blogs.*')
-          .distinct();
+          .leftJoin('likes', 'blogs.id', 'likes.blog_id')
+          .groupBy('blogs.id')
+          .havingRaw('COUNT(likes.id) >= ?', [minLikesCount])
+          .select('blogs.*');
         countQuery = countQuery
-          .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
-          .where('blog_categories.category_id', category_id)
-          .where(function() {
-            this.where('blogs.status', 'published').orWhereNull('blogs.status');
-          });
+          .leftJoin('likes', 'blogs.id', 'likes.blog_id')
+          .groupBy('blogs.id')
+          .havingRaw('COUNT(likes.id) >= ?', [minLikesCount]);
+      }
+      
+      if (categoryIds && Array.isArray(categoryIds) && categoryIds.length > 0) {
+        // Filter by multiple categories (posts that have ANY of the selected categories)
+        // If we already have a leftJoin for likes, we need to use join instead
+        if (min_likes !== null && min_likes !== undefined && !isNaN(parseInt(min_likes, 10))) {
+          blogsQuery = blogsQuery
+            .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+            .whereIn('blog_categories.category_id', categoryIds);
+          countQuery = countQuery
+            .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+            .whereIn('blog_categories.category_id', categoryIds);
+        } else {
+          blogsQuery = blogsQuery
+            .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+            .whereIn('blog_categories.category_id', categoryIds)
+            .select('blogs.*')
+            .distinct();
+          countQuery = countQuery
+            .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+            .whereIn('blog_categories.category_id', categoryIds)
+            .where(function() {
+              this.where('blogs.status', 'published').orWhereNull('blogs.status');
+            });
+        }
       }
       
       // Get total count and paginated results
@@ -477,7 +546,7 @@ app.post('/register', (req, res) => {
       Promise.all([
         countQuery.count('* as total').first(),
         blogsQuery
-          .orderBy('blogs.created_at', 'desc')
+          .orderBy('blogs.created_at', sortOrder)
           .limit(limit)
           .offset(offset)
       ])
@@ -487,21 +556,82 @@ app.post('/register', (req, res) => {
           let fallbackQuery = db('blogs');
           let fallbackCount = db('blogs');
           
-          if (category_id) {
+          // Add date filter if provided
+          if (date_filter) {
+            const filterDate = new Date(date_filter);
+            const nextDay = new Date(filterDate);
+            nextDay.setDate(nextDay.getDate() + 1);
+            
+            fallbackQuery = fallbackQuery.whereBetween('blogs.created_at', [filterDate, nextDay]);
+            fallbackCount = fallbackCount.whereBetween('blogs.created_at', [filterDate, nextDay]);
+          }
+          
+          // Exclude hidden users if current_user_id is provided
+          if (current_user_id) {
+            fallbackQuery = fallbackQuery.whereNotIn('blogs.user_id', function() {
+              this.select('hidden_user_id')
+                .from('hidden_users')
+                .where('user_id', current_user_id);
+            });
+            fallbackCount = fallbackCount.whereNotIn('blogs.user_id', function() {
+              this.select('hidden_user_id')
+                .from('hidden_users')
+                .where('user_id', current_user_id);
+            });
+          }
+          
+          // Show only followed users if filter is enabled
+          if (show_only_followed && current_user_id) {
+            fallbackQuery = fallbackQuery.whereIn('blogs.user_id', function() {
+              this.select('following_id')
+                .from('follows')
+                .where('follower_id', current_user_id);
+            });
+            fallbackCount = fallbackCount.whereIn('blogs.user_id', function() {
+              this.select('following_id')
+                .from('follows')
+                .where('follower_id', current_user_id);
+            });
+          }
+          
+          // Add likes filter if provided
+          if (min_likes !== null && min_likes !== undefined && !isNaN(parseInt(min_likes, 10))) {
+            const minLikesCount = parseInt(min_likes, 10);
             fallbackQuery = fallbackQuery
-              .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
-              .where('blog_categories.category_id', category_id)
-              .select('blogs.*')
-              .distinct();
+              .leftJoin('likes', 'blogs.id', 'likes.blog_id')
+              .groupBy('blogs.id')
+              .havingRaw('COUNT(likes.id) >= ?', [minLikesCount])
+              .select('blogs.*');
             fallbackCount = fallbackCount
-              .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
-              .where('blog_categories.category_id', category_id);
+              .leftJoin('likes', 'blogs.id', 'likes.blog_id')
+              .groupBy('blogs.id')
+              .havingRaw('COUNT(likes.id) >= ?', [minLikesCount]);
+          }
+          
+          if (categoryIds && Array.isArray(categoryIds) && categoryIds.length > 0) {
+            if (min_likes !== null && min_likes !== undefined && !isNaN(parseInt(min_likes, 10))) {
+              fallbackQuery = fallbackQuery
+                .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+                .whereIn('blog_categories.category_id', categoryIds);
+              fallbackCount = fallbackCount
+                .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+                .whereIn('blog_categories.category_id', categoryIds);
+            } else {
+              fallbackQuery = fallbackQuery
+                .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+                .whereIn('blog_categories.category_id', categoryIds)
+                .select('blogs.*')
+                .distinct();
+              fallbackCount = fallbackCount
+                .join('blog_categories', 'blogs.id', 'blog_categories.blog_id')
+                .whereIn('blog_categories.category_id', categoryIds);
+            }
           }
           
           return Promise.all([
             fallbackCount.count('* as total').first(),
             fallbackQuery
-              .orderBy('blogs.created_at', 'desc')
+              .orderBy('blogs.created_at', sortOrder)
               .limit(limit)
               .offset(offset)
           ]);
@@ -609,6 +739,161 @@ app.get('/user-posts/:userId', (req, res) => {
     .catch(err => {
       console.error('Error fetching user posts:', err);
       res.status(500).json({ error: 'Failed to fetch user posts' });
+    });
+})
+
+// Follow a user
+app.post('/follow/:userId', (req, res) => {
+  const { userId } = req.params; // User to follow
+  const { currentUserId } = req.body; // Current logged-in user
+  
+  if (!currentUserId) {
+    return res.status(401).json({ error: 'User not authenticated' });
+  }
+  
+  if (parseInt(userId) === parseInt(currentUserId)) {
+    return res.status(400).json({ error: 'Cannot follow yourself' });
+  }
+  
+  db('follows')
+    .insert({
+      follower_id: currentUserId,
+      following_id: userId
+    })
+    .then(() => {
+      res.json({ success: true, message: 'User followed successfully' });
+    })
+    .catch(err => {
+      if (err.code === '23505') { // Unique constraint violation
+        res.status(400).json({ error: 'Already following this user' });
+      } else {
+        console.error('Error following user:', err);
+        res.status(500).json({ error: 'Failed to follow user' });
+      }
+    });
+})
+
+// Unfollow a user
+app.delete('/follow/:userId', (req, res) => {
+  const { userId } = req.params; // User to unfollow
+  const { currentUserId } = req.body; // Current logged-in user
+  
+  if (!currentUserId) {
+    return res.status(401).json({ error: 'User not authenticated' });
+  }
+  
+  db('follows')
+    .where({
+      follower_id: currentUserId,
+      following_id: userId
+    })
+    .del()
+    .then(deleted => {
+      if (deleted > 0) {
+        res.json({ success: true, message: 'User unfollowed successfully' });
+      } else {
+        res.status(404).json({ error: 'Not following this user' });
+      }
+    })
+    .catch(err => {
+      console.error('Error unfollowing user:', err);
+      res.status(500).json({ error: 'Failed to unfollow user' });
+    });
+})
+
+// Check if user is following another user
+app.get('/follow-status/:userId', (req, res) => {
+  const { userId } = req.params; // User to check
+  const { currentUserId } = req.query; // Current logged-in user
+  
+  if (!currentUserId) {
+    return res.json({ isFollowing: false, isHidden: false });
+  }
+  
+  Promise.all([
+    // Check if following
+    db('follows')
+      .where({
+        follower_id: currentUserId,
+        following_id: userId
+      })
+      .first(),
+    // Check if hidden
+    db('hidden_users')
+      .where({
+        user_id: currentUserId,
+        hidden_user_id: userId
+      })
+      .first()
+  ])
+    .then(([follow, hidden]) => {
+      res.json({
+        isFollowing: !!follow,
+        isHidden: !!hidden
+      });
+    })
+    .catch(err => {
+      console.error('Error checking follow status:', err);
+      res.status(500).json({ error: 'Failed to check follow status' });
+    });
+})
+
+// Hide a user from feed
+app.post('/hide-user/:userId', (req, res) => {
+  const { userId } = req.params; // User to hide
+  const { currentUserId } = req.body; // Current logged-in user
+  
+  if (!currentUserId) {
+    return res.status(401).json({ error: 'User not authenticated' });
+  }
+  
+  if (parseInt(userId) === parseInt(currentUserId)) {
+    return res.status(400).json({ error: 'Cannot hide yourself' });
+  }
+  
+  db('hidden_users')
+    .insert({
+      user_id: currentUserId,
+      hidden_user_id: userId
+    })
+    .then(() => {
+      res.json({ success: true, message: 'User hidden successfully' });
+    })
+    .catch(err => {
+      if (err.code === '23505') { // Unique constraint violation
+        res.status(400).json({ error: 'User already hidden' });
+      } else {
+        console.error('Error hiding user:', err);
+        res.status(500).json({ error: 'Failed to hide user' });
+      }
+    });
+})
+
+// Unhide a user from feed
+app.delete('/hide-user/:userId', (req, res) => {
+  const { userId } = req.params; // User to unhide
+  const { currentUserId } = req.body; // Current logged-in user
+  
+  if (!currentUserId) {
+    return res.status(401).json({ error: 'User not authenticated' });
+  }
+  
+  db('hidden_users')
+    .where({
+      user_id: currentUserId,
+      hidden_user_id: userId
+    })
+    .del()
+    .then(deleted => {
+      if (deleted > 0) {
+        res.json({ success: true, message: 'User unhidden successfully' });
+      } else {
+        res.status(404).json({ error: 'User not hidden' });
+      }
+    })
+    .catch(err => {
+      console.error('Error unhiding user:', err);
+      res.status(500).json({ error: 'Failed to unhide user' });
     });
 })
 
@@ -997,27 +1282,79 @@ app.get('/blogs/:postId/categories', (req, res) => {
 app.get('/user-preference/:userId', (req, res) => {
   const { userId } = req.params;
   
+  // Try to get user with preferred_category_ids_json, fallback to just preferred_category_id
   db('users')
     .where({ id: userId })
-    .select('preferred_category_id')
+    .select('preferred_category_id', 'preferred_category_ids_json')
     .first()
     .then(user => {
       if (user) {
-        res.json({ preferred_category_id: user.preferred_category_id });
+        // Try to parse JSON array first (new format), fall back to single ID (old format)
+        let categoryIds = null;
+        if (user.preferred_category_ids_json) {
+          try {
+            const parsed = JSON.parse(user.preferred_category_ids_json);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              categoryIds = parsed;
+            }
+          } catch (e) {
+            // Invalid JSON, ignore
+          }
+        }
+        
+        // If no array found, check for single ID (backward compatibility)
+        if (!categoryIds && user.preferred_category_id !== null && user.preferred_category_id !== undefined) {
+          categoryIds = [user.preferred_category_id];
+        }
+        
+        res.json({ 
+          preferred_category_id: user.preferred_category_id, // Keep for backward compatibility
+          preferred_category_ids: categoryIds || []
+        });
       } else {
         res.status(404).json({ error: 'User not found' });
       }
     })
     .catch(err => {
-      console.error('Error fetching user preference:', err);
-      res.status(500).json({ error: 'Failed to fetch user preference' });
+      // If error is due to missing column, try without it
+      if (err.message && err.message.includes('preferred_category_ids_json')) {
+        db('users')
+          .where({ id: userId })
+          .select('preferred_category_id')
+          .first()
+          .then(user => {
+            if (user) {
+              const categoryIds = user.preferred_category_id !== null && user.preferred_category_id !== undefined
+                ? [user.preferred_category_id]
+                : [];
+              res.json({ 
+                preferred_category_id: user.preferred_category_id,
+                preferred_category_ids: categoryIds
+              });
+            } else {
+              res.status(404).json({ error: 'User not found' });
+            }
+          })
+          .catch(fallbackErr => {
+            console.error('Error in fallback query:', fallbackErr);
+            res.status(500).json({ error: 'Failed to fetch user preference' });
+          });
+      } else {
+        console.error('Error fetching user preference:', err);
+        res.status(500).json({ error: 'Failed to fetch user preference' });
+      }
     });
 });
 
 // Update user's category preference
 app.put('/user-preference/:userId', (req, res) => {
   const { userId } = req.params;
-  const { preferred_category_id } = req.body;
+  const { preferred_category_id, preferred_category_ids } = req.body;
+  
+  // Support both old format (single ID) and new format (array)
+  const categoryIds = preferred_category_ids !== undefined 
+    ? preferred_category_ids 
+    : (preferred_category_id !== undefined ? [preferred_category_id] : []);
   
   // Validate userId exists
   db('users')
@@ -1028,35 +1365,46 @@ app.put('/user-preference/:userId', (req, res) => {
         return res.status(404).json({ error: 'User not found' });
       }
       
-      // If category_id provided, validate it exists
-      if (preferred_category_id !== null && preferred_category_id !== undefined) {
+      // If category_ids provided, validate they exist
+      if (Array.isArray(categoryIds) && categoryIds.length > 0) {
+        // Validate all category IDs exist
         return db('categories')
-          .where({ id: preferred_category_id })
-          .first()
-          .then(category => {
-            if (!category) {
-              return res.status(400).json({ error: 'Category not found' });
+          .whereIn('id', categoryIds)
+          .then(categories => {
+            if (categories.length !== categoryIds.length) {
+              return res.status(400).json({ error: 'One or more categories not found' });
             }
             
-            // Update user preference
+            // Store as JSON string in preferred_category_ids_json
+            // Also update preferred_category_id for backward compatibility (use first ID)
+            const updateData = {
+              preferred_category_ids_json: JSON.stringify(categoryIds),
+              preferred_category_id: categoryIds[0] // Keep first ID for backward compatibility
+            };
+            
             return db('users')
               .where({ id: userId })
-              .update({ preferred_category_id: preferred_category_id })
+              .update(updateData)
               .then(() => {
                 res.json({ 
                   success: true, 
-                  preferred_category_id: preferred_category_id 
+                  preferred_category_ids: categoryIds,
+                  preferred_category_id: categoryIds[0] // For backward compatibility
                 });
               });
           });
       } else {
-        // Clear preference (set to null)
+        // Clear preference (set to null/empty)
         return db('users')
           .where({ id: userId })
-          .update({ preferred_category_id: null })
+          .update({ 
+            preferred_category_id: null,
+            preferred_category_ids_json: null
+          })
           .then(() => {
             res.json({ 
               success: true, 
+              preferred_category_ids: [],
               preferred_category_id: null 
             });
           });
