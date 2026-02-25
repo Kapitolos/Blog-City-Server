@@ -169,3 +169,5 @@ CROSS JOIN (VALUES
 WHERE b.posttitle = c.post_title AND u.email = c.user_email
 ON CONFLICT DO NOTHING;
 
+
+

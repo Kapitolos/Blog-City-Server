@@ -26,3 +26,5 @@ CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
 CREATE INDEX IF NOT EXISTS idx_hidden_users_user ON hidden_users(user_id);
 CREATE INDEX IF NOT EXISTS idx_hidden_users_hidden ON hidden_users(hidden_user_id);
 
+
+

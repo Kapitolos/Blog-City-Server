@@ -8,3 +8,5 @@ ADD COLUMN IF NOT EXISTS preferred_category_ids_json TEXT;
 -- Create index for faster lookups (though JSON queries are limited)
 -- Note: PostgreSQL JSONB would be better, but TEXT is simpler for now
 
+
+

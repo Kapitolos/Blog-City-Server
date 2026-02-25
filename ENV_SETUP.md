@@ -1,43 +1,50 @@
 # Environment Variables Setup
 
-## Important: Create .env file
+## Server (Blog-City-Server)
 
-The `.env` file must be named exactly `.env` (with a dot at the beginning) and placed in the `my-server` directory.
+### DB password: use a system environment variable (recommended)
 
-## Steps to Create .env File
+**Do not put your database password in any text file** (including `.env`) that might be committed or shared. Set it as a **system environment variable** on your PC instead. The server and `populate-sample-data.js` read `process.env.DB_PASSWORD`, so they will use your system variable when you run them.
 
-1. Navigate to the `my-server` directory
-2. Create a new file named `.env` (not `server.env` or `env.txt`)
-3. Copy the contents from `ENV_TEMPLATE.txt` into your `.env` file
-4. Update the values with your actual database credentials
+- **Windows:** System Properties → Environment Variables → New (e.g. name `DB_PASSWORD`, value your PostgreSQL password). Restart the terminal/IDE after setting.
+- **macOS/Linux:** Add `export DB_PASSWORD='your_password'` to `~/.bashrc` or `~/.zshrc`, or set it in your shell before running the app.
 
-## .env File Template
+### Optional .env for other settings
+
+You can use a `.env` file in **Blog-City-Server** only for non-secret values (DB_HOST, DB_USER, DB_NAME, DB_PORT, PORT). Copy `ENV_TEMPLATE.txt` to `.env` and adjust if needed. **Do not add DB_PASSWORD to `.env`**—keep using the system env var.
+
+### Variables
+
+| Variable      | Description                    | Where to set        | Default (if any) |
+|---------------|--------------------------------|---------------------|------------------|
+| **DB_PASSWORD** | PostgreSQL password           | **System env var** | *required*      |
+| DB_HOST       | Database host                  | .env or system     | 127.0.0.1        |
+| DB_USER       | Database user                  | .env or system     | postgres         |
+| DB_NAME       | Database name                  | .env or system     | Blog             |
+| DB_PORT       | Database port                  | .env or system     | 3002             |
+| PORT          | Server listen port             | .env or system     | 3001              |
+
+### Notes
+
+- The server and `populate-sample-data.js` read from `process.env` (system env and, if present, `.env` via dotenv). System variables are not overridden by `.env` by default.
+- Keep `.env` in `.gitignore` and never commit real secrets.
+
+---
+
+## Client (Blog-City-Client)
+
+### Optional: API base URL
+
+For local development the client uses `http://localhost:3001` by default. For production (or a different backend URL), set:
+
+| Variable             | Description              | Default              |
+|----------------------|--------------------------|----------------------|
+| **REACT_APP_API_URL** | Backend API base URL     | http://localhost:3001 |
+
+Create a `.env` (or `.env.production`) in **Blog-City-Client** with:
 
 ```env
-# Database Configuration
-DB_HOST=127.0.0.1
-DB_USER=postgres
-DB_PASSWORD=Redwings!
-DB_NAME=Blog
-DB_PORT=3002
-
-# Server Configuration
-PORT=3001
-
-# API Configuration
-API_URL=http://localhost:3001
+REACT_APP_API_URL=https://your-api.example.com
 ```
 
-## Notes
-
-- The `.env` file is already in `.gitignore` so it won't be committed to version control
-- Never commit your actual `.env` file with real passwords
-- The server will use these environment variables automatically when you start it
-- If `.env` doesn't exist, the server will use default values (which may not work)
-
-## Verification
-
-After creating the `.env` file, restart your server. The server should connect to your database using the credentials from the `.env` file.
-
-
-
+Then run `npm run build` so the value is baked into the build. Do not commit `.env` if it contains secrets (this one is usually not secret).
