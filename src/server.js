@@ -1424,13 +1424,21 @@ app.put('/user-preference/:userId', (req, res) => {
     });
 });
 
-// Image upload endpoint for blog posts
-app.post('/upload-image', uploadImage.single('image'), (req, res) => {
+// Image upload endpoint for blog posts (with multer error handling so client gets JSON)
+app.post('/upload-image', (req, res, nextOriginal) => {
+  const next = (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Image too large (max 5MB)' });
+      if (err.message && err.message.includes('Only image')) return res.status(400).json({ error: 'Only image files are allowed' });
+      return res.status(500).json({ error: err.message || 'Upload failed' });
+    }
+    nextOriginal();
+  };
+  uploadImage.single('image')(req, res, next);
+}, (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No image file provided' });
   }
-  
-  // Return the URL to access the uploaded image
   const imageUrl = `/uploads/images/${req.file.filename}`;
   res.json({
     success: true,
