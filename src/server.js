@@ -9,7 +9,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const db = knex({
+const dbConfig = {
     client: 'pg',
     connection: {
         host: process.env.DB_HOST || '127.0.0.1',
@@ -18,7 +18,14 @@ const db = knex({
         database: process.env.DB_NAME || 'Blog',
         port: process.env.DB_PORT || 3002
     }
-})
+};
+// Render and most cloud Postgres require SSL. Enable when DB_SSL=true or host looks like a cloud DB.
+const dbHost = dbConfig.connection.host || '';
+const needsSSL = process.env.DB_SSL === 'true' || /\.(render\.com|neon\.tech|supabase\.co|amazonaws\.com)/i.test(dbHost);
+if (needsSSL) {
+    dbConfig.connection.ssl = { rejectUnauthorized: false };
+}
+const db = knex(dbConfig);
 
 
 
@@ -1183,7 +1190,7 @@ app.get('/comments/:postId/count', (req, res) => {
 
 // Get all categories (all public categories are visible to everyone)
 app.get('/categories', (req, res) => {
-  // Show all public categories to everyone (custom categories are public by default)
+  // Prefer filtering by is_public if column exists; otherwise return all categories
   db('categories')
     .where('is_public', true)
     .select('*')
@@ -1192,13 +1199,14 @@ app.get('/categories', (req, res) => {
       res.json(categories || []);
     })
     .catch(err => {
-      console.error('Error fetching categories:', err);
-      // Return empty array instead of error if table doesn't exist
-      if (err.message && err.message.includes('does not exist')) {
-        res.json([]);
-      } else {
-        res.status(500).json({ error: 'Failed to fetch categories' });
+      console.error('Error fetching categories (will try without is_public):', err.message);
+      // If is_public column doesn't exist, fetch all categories without that filter
+      if (err.message && (err.message.includes('does not exist') || err.message.includes('is_public'))) {
+        return db('categories').select('*').orderBy('name', 'asc')
+          .then(categories => res.json(categories || []))
+          .catch(() => res.status(500).json({ error: 'Failed to fetch categories' }));
       }
+      res.status(500).json({ error: 'Failed to fetch categories' });
     });
 });
 
