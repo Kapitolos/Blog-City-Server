@@ -1,10 +1,11 @@
 require('dotenv').config();
 const express = require('express');
-// const bodyParser = require('body-parser');
+const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const knex = require('knex');
 const sanitize = require('./utils/sanitize');
+const { checkContent } = require('./moderation/contentCheck.js');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -33,8 +34,33 @@ const db = knex(dbConfig);
 const app = express();
 
 app.use(express.json());
-app.use(express.urlencoded({extended: true})); 
+app.use(express.urlencoded({ extended: true }));
 app.use(cors());
+
+// Rate limiting: general (per IP)
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  message: { error: 'Too many requests; please try again later.' }
+});
+app.use(generalLimiter);
+
+// Stricter limits for creating content (per IP)
+const createPostLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many posts; please try again in a few minutes.' }
+});
+const createCommentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  message: { error: 'Too many comments; please try again in a few minutes.' }
+});
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { error: 'Too many uploads; please try again in a few minutes.' }
+});
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, '../uploads');
@@ -219,23 +245,19 @@ app.post('/register', (req, res) => {
     });
 });
   
-  app.post('/blogpost', (req, res) => {
+  app.post('/blogpost', createPostLimiter, (req, res) => {
     let { postbody, name, posttitle, id, category_ids, status = 'published' } = req.body;
     
     // Sanitize input
     name = sanitize.sanitizeInput(name);
-    // Don't escape HTML entities in title - it's displayed as plain text, not HTML
-    // Just trim and validate, but don't escape since React will handle it safely
     posttitle = posttitle ? posttitle.trim() : '';
-    postbody = sanitize.sanitizeText(postbody); // Use sanitizeText for blog content
-    status = status === 'draft' ? 'draft' : 'published'; // Ensure valid status
+    postbody = sanitize.sanitizeText(postbody);
+    status = status === 'draft' ? 'draft' : 'published';
     
     console.log('=== BLOG POST CREATION ATTEMPT ===');
     console.log('Request body:', { postbody: postbody?.substring(0, 50) + '...', name, posttitle, id, category_ids, status });
     console.log('User ID type:', typeof id, 'Value:', id);
     
-    // Validate required fields
-    // For drafts, only title is required. For published, both title and body are required.
     if (!posttitle || !name || !id) {
       console.log('❌ Missing required fields');
       return res.status(400).json({ 
@@ -244,13 +266,17 @@ app.post('/register', (req, res) => {
       });
     }
     
-    // For published posts, body is required
     if (status === 'published' && !postbody) {
       console.log('❌ Published posts require content');
       return res.status(400).json({ 
         error: 'Published posts require content', 
         details: 'Please add content to your post before publishing'
       });
+    }
+
+    const contentResult = checkContent({ title: posttitle, body: postbody || '' });
+    if (!contentResult.allowed) {
+      return res.status(400).json({ error: contentResult.error });
     }
     
     db.transaction(trx => {
@@ -306,12 +332,13 @@ app.post('/register', (req, res) => {
     const { id } = req.params;
     let { postbody, posttitle, user_id, status } = req.body;
     
-    // Sanitize input
-    // Don't escape HTML entities in title - it's displayed as plain text
     posttitle = posttitle ? posttitle.trim() : '';
-    postbody = sanitize.sanitizeText(postbody); // Use sanitizeText for blog content
-    if (status) {
-      status = status === 'draft' ? 'draft' : 'published'; // Ensure valid status
+    postbody = sanitize.sanitizeText(postbody);
+    if (status) status = status === 'draft' ? 'draft' : 'published';
+    
+    const contentResult = checkContent({ title: posttitle, body: postbody || '' });
+    if (!contentResult.allowed) {
+      return res.status(400).json({ error: contentResult.error });
     }
     
     console.log('=== BLOG POST UPDATE ATTEMPT ===');
@@ -1063,17 +1090,15 @@ app.get('/user-likes/:userId', (req, res) => {
 });
 
 // Create a new comment
-app.post('/comment', (req, res) => {
+app.post('/comment', createCommentLimiter, (req, res) => {
   let { blog_id, user_id, user_name, comment_text } = req.body;
   
-  // Sanitize input
   user_name = sanitize.sanitizeInput(user_name);
-  comment_text = sanitize.sanitizeText(comment_text); // Use sanitizeText for comments
+  comment_text = sanitize.sanitizeText(comment_text);
   
   console.log('=== COMMENT CREATION ATTEMPT ===');
   console.log('Blog ID:', blog_id, 'User ID:', user_id);
   
-  // Validate required fields
   if (!blog_id || !user_id || !user_name || !comment_text || !comment_text.trim()) {
     return res.status(400).json({ 
       error: 'Missing required fields',
@@ -1083,6 +1108,11 @@ app.post('/comment', (req, res) => {
   
   if (comment_text.trim().length < 1) {
     return res.status(400).json({ error: 'Comment cannot be empty' });
+  }
+
+  const contentResult = checkContent({ comment: comment_text });
+  if (!contentResult.allowed) {
+    return res.status(400).json({ error: contentResult.error });
   }
   
   if (comment_text.trim().length > 1000) {
@@ -1425,7 +1455,7 @@ app.put('/user-preference/:userId', (req, res) => {
 });
 
 // Image upload endpoint for blog posts (with multer error handling so client gets JSON)
-app.post('/upload-image', (req, res, nextOriginal) => {
+app.post('/upload-image', uploadLimiter, (req, res, nextOriginal) => {
   const next = (err) => {
     if (err) {
       if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Image too large (max 5MB)' });
@@ -1448,7 +1478,7 @@ app.post('/upload-image', (req, res, nextOriginal) => {
 });
 
 // Avatar upload endpoint
-app.post('/upload-avatar', uploadAvatar.single('avatar'), (req, res) => {
+app.post('/upload-avatar', uploadLimiter, uploadAvatar.single('avatar'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No avatar file provided' });
   }
@@ -1507,6 +1537,58 @@ app.get('/avatar/:userId', (req, res) => {
       } else {
         res.status(500).json({ error: 'Failed to fetch avatar' });
       }
+    });
+});
+
+// Report content (post or comment) - requires reports table
+app.post('/report', (req, res) => {
+  const { blog_id, comment_id, reporter_id, reason, details } = req.body;
+  if (!reporter_id || !reason) {
+    return res.status(400).json({ error: 'Reporter ID and reason are required' });
+  }
+  if (!blog_id && !comment_id) {
+    return res.status(400).json({ error: 'Either blog_id or comment_id is required' });
+  }
+  const validReasons = ['spam', 'harassment', 'inappropriate', 'other'];
+  const reasonNormalized = (reason || '').toString().trim().toLowerCase();
+  if (!validReasons.includes(reasonNormalized)) {
+    return res.status(400).json({ error: 'Invalid reason. Use: spam, harassment, inappropriate, other' });
+  }
+  db('reports')
+    .insert({
+      blog_id: blog_id || null,
+      comment_id: comment_id || null,
+      reporter_id: reporter_id,
+      reason: reasonNormalized,
+      details: details ? details.toString().trim().substring(0, 500) : null
+    })
+    .returning('id')
+    .then(rows => {
+      res.status(201).json({ success: true, id: rows[0].id });
+    })
+    .catch(err => {
+      if (err.code === '42P01') {
+        return res.status(503).json({ error: 'Reports not available yet. Please try again later.' });
+      }
+      console.error('Error creating report:', err);
+      res.status(500).json({ error: 'Failed to submit report' });
+    });
+});
+
+// Get recent reports (for admin/moderation - optional, no auth for now)
+app.get('/reports', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+  db('reports')
+    .select('reports.*', 'blogs.posttitle as blog_title', 'users.name as reporter_name')
+    .leftJoin('blogs', 'reports.blog_id', 'blogs.id')
+    .leftJoin('users', 'reports.reporter_id', 'users.id')
+    .orderBy('reports.created_at', 'desc')
+    .limit(limit)
+    .then(rows => res.json(rows))
+    .catch(err => {
+      if (err.code === '42P01') return res.json([]);
+      console.error('Error fetching reports:', err);
+      res.status(500).json({ error: 'Failed to fetch reports' });
     });
 });
 

@@ -31,7 +31,8 @@ const files = [
   'database-setup-complete.sql',
   'database-follows-migration.sql',
   'database-multiple-categories-migration.sql',
-  'database-user-preferences-migration.sql'
+  'database-user-preferences-migration.sql',
+  'database-reports-migration.sql'
 ];
 
 async function run() {
