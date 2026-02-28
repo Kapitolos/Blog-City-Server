@@ -49,20 +49,21 @@ const sanitize = {
     
     // Sanitize img tags - only allow src from trusted sources
     sanitized = sanitized.replace(/<img([^>]*)>/gi, (match, attributes) => {
-      // Extract src attribute
+      // Extract src attribute (allow quoted URLs; be careful with nested quotes)
       const srcMatch = attributes.match(/src\s*=\s*["']([^"']+)["']/i);
       if (!srcMatch) return ''; // Remove img without src
       
-      const src = srcMatch[1];
-      // Only allow images from local server or data URIs (for base64)
-      const isLocal = src.startsWith('/uploads/') || src.startsWith('http://localhost:3001/uploads/');
+      const src = srcMatch[1].trim();
+      // Allow: our uploads path, relative /uploads/, data URIs, or external https? image URLs
+      const isUploadsPath = /\/uploads\/(images|avatars)\//.test(src) || src.startsWith('/uploads/');
       const isDataUri = src.startsWith('data:image/');
+      const isExternalUrl = /^https?:\/\//i.test(src) && !/javascript:/i.test(src);
       
-      if (!isLocal && !isDataUri) {
+      if (!isUploadsPath && !isDataUri && !isExternalUrl) {
         return ''; // Remove untrusted images
       }
       
-      // Clean up attributes - only allow safe ones
+      // Clean up attributes - only allow safe ones (preserve src exactly)
       const safeAttrs = attributes
         .replace(/on\w+\s*=\s*["'][^"']*["']/gi, '') // Remove event handlers
         .replace(/javascript:/gi, '') // Remove javascript: URLs
