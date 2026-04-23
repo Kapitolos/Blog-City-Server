@@ -3,7 +3,7 @@ DB_HOST=dpg-d6fju4cr85hc73fi6mig-a.oregon-postgres.render.com
 DB_PORT=5432
 DB_USER=blogcity_user
 DB_NAME=blogcity
-DB_PASSWORD=OXrR9qjT9RqqS3b6saK0FRBNNzSyxS1X
+DB_PASSWORD=env variable
 DB_SSL=true
 
 # Server Configuration
